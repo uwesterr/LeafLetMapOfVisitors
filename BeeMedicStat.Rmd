@@ -1,0 +1,262 @@
+---
+title: "Stat of BeeMedic usage"
+output:
+  html_document:
+    df_print: paged
+---
+
+
+
+```{r message=FALSE, warning=FALSE}
+#rm(list = ls(all = TRUE))
+
+library(plotly)
+library(tidyverse)
+library(leaflet)
+library(rgdal)
+library(rgeolocate)
+library(rgdal)
+library(RColorBrewer)
+
+```
+
+
+Read data in 
+```{r}
+cygnetdb_temp <- read.csv("data/db12376021-cygnetuser_datatable2_shorttest.sql", header=FALSE, quote="'", na.strings="(") %>% as_tibble()
+#cygnetdb_temp <- read_csv("data/db12376021-cygnetuser_datatable2_shorttest.sql", 
+#                          trim_ws = TRUE, quoted_na= TRUE, col_names = FLASE) %>% as_tibble()
+
+cygnetdb = cygnetdb_temp[!grepl("INSERT", cygnetdb_temp$V1),]
+cygnetdb = cygnetdb[!grepl("null|rd_err", cygnetdb$V4),]
+cygnetdb = cygnetdb[!grepl("`Serial_number`", cygnetdb$V3),]
+cygnetdb = cygnetdb[!grepl("null", cygnetdb$V9),]
+cygnetdb <- cygnetdb %>% dplyr::rename(IpAddress = V16) %>% mutate(IpAddress = as.character(IpAddress) %>% trimws(),  AccessDate = as.Date(sub(".", "", V1)))
+
+
+```
+
+
+Find vignette of rgeolocate at https://cran.r-project.org/web/packages/rgeolocate/vignettes/Introduction_to_rgeolocate.html 
+MaxMind does openly release a more limited set of databases covering country and city data; these are also supported and can be obtained https://dev.maxmind.com/geoip/geoip2/geolite2/ . 
+
+
+
+```{r}
+
+file <- system.file("extdata","GeoLite2-Country.mmdb", package = "rgeolocate")
+tmp <-  cygnetdb%>% select(IpAddress) %>% mutate(IpCountry = purrr::map(IpAddress, maxmind, file, c("country_code", "country_name")))
+tmp <-            tmp   %>% unnest(IpCountry) %>% group_by(country_name) %>% 
+  tally(name = "NumberOfUse") 
+tmp %>% mutate(country_name = fct_reorder(country_name, NumberOfUse)) %>%  ggplot(aes(country_name, NumberOfUse)) + geom_col() + coord_flip()
+
+
+
+```
+
+### Customizied leaflet choropleth map
+
+
+```{r}
+mybins <- c(0,10,20,50,100, 200, 500,Inf)
+library(rgdal)
+world_spdf <- readOGR( 
+  dsn= paste0(getwd(),"/DATA/world_shape_file/") , 
+  layer="TM_WORLD_BORDERS_SIMPL-0.3",
+  verbose=FALSE
+)
+ world_spdf@data <- left_join(world_spdf@data,tmp , by = c("NAME" = "country_name"))
+
+mypalette <- colorBin( palette="YlOrBr", domain=world_spdf@data$NumberOfUse, na.color="transparent", bins=mybins)
+ 
+# Prepare the text for tooltips:
+mytext <- paste(
+    "Country: ", world_spdf@data$NAME,"<br/>", 
+    "Area: ", world_spdf@data$AREA, "<br/>", 
+    "Number of useages: ", round(world_spdf@data$NumberOfUse, 2), 
+    sep="") %>%
+  lapply(htmltools::HTML)
+ 
+# Final Map
+leaflet(world_spdf) %>% 
+  addTiles()  %>% 
+  setView( lat=10, lng=0 , zoom=2) %>%
+  addPolygons( 
+    fillColor = ~mypalette(NumberOfUse), 
+    stroke=TRUE, 
+    fillOpacity = 0.9, 
+    color="white", 
+    weight=0.3,
+    label = mytext,
+    labelOptions = labelOptions( 
+      style = list("font-weight" = "normal", padding = "3px 8px"), 
+      textsize = "13px", 
+      direction = "auto"
+    )
+  ) %>%
+  addLegend( pal=mypalette, values=~NumberOfUse, opacity=0.9, title = "Number of useages (M)", position = "bottomleft" )
+
+
+  
+# save the widget in a html file if needed.
+# library(htmlwidgets)
+# saveWidget(m, file=paste0( getwd(), "/HtmlWidget/choroplethLeaflet5.html"))
+```
+
+
+Info on how to create leaflet maps are at https://rstudio.github.io/leaflet/ 
+
+```{r}
+library(maps)
+mapStates = map("state", fill = TRUE, plot = FALSE)
+leaflet(data = mapStates) %>% addTiles() %>%
+  addPolygons(fillColor = topo.colors(10, alpha = NULL), stroke = FALSE)
+```
+
+## Popups
+
+https://rstudio.github.io/leaflet/popups.html   
+A common use for popups is to have them appear when markers or shapes are clicked. Marker and shape functions in the Leaflet package take a popup argument, where you can pass in HTML to easily attach a simple popup. 
+```{r}
+content <- paste(sep = "<br/>",
+  "<b><a href='http://www.samurainoodle.com'>Samurai Noodle</a></b>",
+  "606 5th Ave. S",
+  "Seattle, WA 98138"
+)
+
+leaflet() %>% addTiles() %>%
+  addPopups(-122.327298, 47.597131, content,
+    options = popupOptions(closeButton = FALSE)
+  )
+```
+
+## A choropleth map
+
+A choropleth map (from Greek χῶρος "area/region" and πλῆθος "multitude") is a type of thematic map in which areas are shaded or patterned in proportion to a statistical variable that represents an aggregate summary of a geographic characteristic within each area, such as population density or per-capita income.
+
+World boundaries geo.json downloaded from here.https://github.com/johan/world.geo.json
+
+```{r}
+WorldCountry <-geojsonio::geojson_read("data/countries.geo.json", what = "sp")
+#Dataframe for choropleth map
+Country <- c("Bulgaria","Pakistan","Turkey")
+Projects <- c(2,1,6)
+data <- data.frame(Country,Projects)
+data_Map <- WorldCountry[WorldCountry$id %in% data$Country, ]
+Map <- leaflet(data_Map) %>% addTiles() %>% addPolygons()
+#basemap
+#Map <- leaflet(WorldCountry) %>% addTiles() %>% addPolygons()
+
+#set bin and color for choropleth map
+bins <- c(0,1,2,3,4,5,6,7,8,9,10,Inf)
+pal <- colorBin("YlOrRd", domain = data$Projects, bins = bins)
+
+#set labels
+labels <- sprintf(
+  "<strong>%s</strong><br/>%g projects <sup></sup>",
+  data$Country, data$Projects) %>% lapply(htmltools::HTML)
+
+#add polygons,labels and mouse over effect
+Map %>% addPolygons(
+  fillColor = ~pal(data$Projects),
+  weight = 2,
+  opacity = 1,
+  color = 'white',
+  dashArray = '3',
+  fillOpacity = 0.7,
+  highlight = highlightOptions(
+     weight = 5,
+    color = "#666",
+    dashArray = "",
+    fillOpacity = 0.7,
+    bringToFront = TRUE),
+  label = labels,
+  labelOptions = labelOptions(
+    style = list("font-weight" = "normal", padding = "3px 8px"),
+    textsize = "15px",
+    direction = "auto")
+)
+```
+## Interactive choropleth map with R and leaflet 
+This post explains how to build an interactive choropleth map with R and the leaflet package. A tooltip is available for each region on hover, and the map is 
+https://www.r-graph-gallery.com/183-choropleth-map-with-leaflet.html
+
+This tutorial uses a geospatial object stored in a shape file available here. Start by downloading the file:
+
+```{r}
+# Download the shapefile. (note that I store it in a folder called DATA. You have to change that if needed.)
+download.file("http://thematicmapping.org/downloads/TM_WORLD_BORDERS_SIMPL-0.3.zip" , destfile="DATA/world_shape_file.zip")
+# You now have it in your current working directory, have a look!
+```
+And load it in R
+
+```{r}
+# Read this shape file with the rgdal library. 
+library(rgdal)
+world_spdf <- readOGR( 
+  dsn= paste0(getwd(),"/DATA/world_shape_file/") , 
+  layer="TM_WORLD_BORDERS_SIMPL-0.3",
+  verbose=FALSE
+)
+
+# Clean the data object
+library(dplyr)
+world_spdf@data$POP2005[ which(world_spdf@data$POP2005 == 0)] = NA
+world_spdf@data$POP2005 <- as.numeric(as.character(world_spdf@data$POP2005)) / 1000000 %>% round(2)
+
+# -- > Now you have a Spdf object (spatial polygon data frame). You can start doing maps!
+```
+
+
+
+
+
+
+
+```{r}
+# Create a color palette for the map:
+mypalette <- colorNumeric( palette="viridis", domain=world_spdf@data$POP2005, na.color="transparent")
+mypalette(c(45,43))
+
+# Basic choropleth with leaflet?
+m <- leaflet(world_spdf) %>% 
+  addTiles()  %>% 
+  setView( lat=10, lng=0 , zoom=2) %>%
+  addPolygons( fillColor = ~mypalette(POP2005), stroke=FALSE )
+
+m
+```
+
+
+# Time series heatmap
+
+
+```{r}
+library(data.table)
+library(ggplot2)
+library(ggTimeSeries)
+set.seed(1)
+dtData = data.table(
+      DateCol = seq(
+         as.Date("1/01/2014", "%d/%m/%Y"),
+         as.Date("31/12/2014", "%d/%m/%Y"),
+         "days"
+      ),
+      ValueCol = runif(730)
+   )
+# you could also try categorical data with
+# ValueCol = sample(c('a','b','c'), 730, replace = T)
+p1 = ggplot_calendar_heatmap(
+   dtData,
+   'DateCol',
+   'ValueCol'
+)
+ggplotly(p1)
+# add new geoms
+
+```
+
+http://www.columbia.edu/~sg3637/blog/Time_Series_Heatmaps.html 
+
+
+
